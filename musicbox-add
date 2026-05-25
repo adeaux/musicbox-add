@@ -1,0 +1,276 @@
+#!/usr/bin/env python3
+"""
+musicbox-add: Extract albums from the current Safari tab and add them to MusicBox.
+
+Usage:
+    Open an article (e.g. RA best-of list) in Safari, then run:
+        ./musicbox-add
+
+    Or pass a URL to fetch directly (works for non-JS sites):
+        ./musicbox-add https://example.com/best-albums
+
+    Options:
+        --tag TAG       Auto-tag all added items (e.g. --tag "yearly-list")
+        --dry-run       Show what would be added without actually adding
+
+    Environment:
+        ANTHROPIC_API_KEY  — required (or set in ~/.zshrc)
+        MUSICBOX_MODEL     — optional, default: claude-haiku-4-5-20251001
+"""
+
+import json, os, subprocess, sys, time, urllib.request, urllib.parse, urllib.error, argparse, re, unicodedata
+
+API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+if not API_KEY:
+    sys.exit("Set ANTHROPIC_API_KEY environment variable. Get one at https://console.anthropic.com/")
+MODEL = os.environ.get("MUSICBOX_MODEL", "claude-haiku-4-5-20251001")
+CLAUDE_URL = "https://api.anthropic.com/v1/messages"
+
+def get_safari_text():
+    """Get the rendered innerText from the current Safari tab via AppleScript."""
+    script = 'tell application "Safari" to do JavaScript "document.body.innerText.substring(0, 60000)" in current tab of front window'
+    result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=15)
+    if result.returncode != 0:
+        sys.exit(f"Failed to get Safari text: {result.stderr.strip()}")
+    return result.stdout.strip()
+
+def fetch_url_text(url):
+    """Fetch a URL and return its text content (for non-JS sites)."""
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        return resp.read().decode("utf-8", errors="replace")[:60000]
+
+def extract_albums(text):
+    """Ask Claude to extract artist-album pairs from the text."""
+    prompt = (
+        "You are reading a music article that lists albums, EPs, or compilations. "
+        "Extract EVERY album/EP/compilation mentioned. Be thorough — scan the ENTIRE text.\n\n"
+        "Rules:\n"
+        "- Return one entry per line in the format: Artist - Album Title\n"
+        "- Only include items that are explicitly named in the article\n"
+        "- Do NOT invent, infer, or hallucinate entries that aren't in the text\n"
+        "- Do NOT include individual song/track names — only album/EP/compilation titles\n"
+        "- For compilations, use the label or 'Various Artists' as the artist\n"
+        "- No numbering, bullet points, or commentary\n\n"
+        "Article text:\n\n"
+        + text
+    )
+    body = json.dumps({
+        "model": MODEL,
+        "max_tokens": 4096,
+        "messages": [{"role": "user", "content": prompt}],
+    }).encode()
+    req = urllib.request.Request(CLAUDE_URL, data=body, headers={
+        "x-api-key": API_KEY,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+    })
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        result = json.load(resp)
+    lines = [line.strip() for line in result["content"][0]["text"].splitlines() if line.strip()]
+    # Filter out anything that doesn't look like "Artist - Title"
+    return [l for l in lines if " - " in l]
+
+def normalize(s):
+    """Normalize a string for fuzzy comparison: lowercase, strip accents, remove punctuation."""
+    s = s.lower().strip()
+    # Strip accents
+    s = ''.join(c for c in unicodedata.normalize('NFD', s) if unicodedata.category(c) != 'Mn')
+    # Remove punctuation and extra whitespace
+    s = re.sub(r'[^\w\s]', '', s)
+    s = re.sub(r'\s+', ' ', s).strip()
+    return s
+
+STOP_WORDS = {"the", "a", "an", "and", "or", "of", "in", "on", "at", "to", "for",
+              "de", "do", "da", "dos", "das", "del", "la", "le", "les", "el",
+              "dj", "mc", "feat", "featuring", "vs", "ep", "single", "vol", "ii"}
+
+def words_overlap(a, b):
+    """Return the fraction of meaningful words in `a` that appear in `b`."""
+    words_a = set(normalize(a).split()) - STOP_WORDS
+    words_b = set(normalize(b).split()) - STOP_WORDS
+    if not words_a:
+        return 0.0
+    return len(words_a & words_b) / len(words_a)
+
+def is_good_match(search_artist, search_title, result_artist, result_album):
+    """Check if an iTunes result is a reasonable match for what we searched."""
+    # Artist overlap in both directions (handles "CCL & Ciel" vs "Ciel & CCL")
+    artist_fwd = words_overlap(search_artist, result_artist)
+    artist_rev = words_overlap(result_artist, search_artist)
+    artist_overlap = max(artist_fwd, artist_rev)
+
+    # Title overlap: check search title words in result album
+    title_overlap = words_overlap(search_title, result_album)
+
+    # For "Various Artists", only require title match
+    if normalize(search_artist) in ("various artists", "various", "va"):
+        return title_overlap >= 0.5
+
+    # For everything else, require BOTH artist AND title overlap
+    if artist_overlap >= 0.3 and title_overlap >= 0.3:
+        return True
+
+    return False
+
+def search_itunes_album(query, search_artist="", search_title="", verify=True):
+    """Search iTunes for an album and return the Apple Music album URL."""
+    encoded = urllib.parse.quote(query)
+    url = f"https://itunes.apple.com/search?media=music&entity=album&limit=5&term={encoded}"
+    try:
+        with urllib.request.urlopen(url, timeout=10) as resp:
+            data = json.load(resp)
+        for result in data.get("results", []):
+            album_url = result.get("collectionViewUrl")
+            album_name = result.get("collectionName", "")
+            artist_name = result.get("artistName", "")
+            if not verify or is_good_match(search_artist, search_title, artist_name, album_name):
+                return album_url, f"{artist_name} — {album_name}"
+    except Exception:
+        pass
+    return None, None
+
+def search_artist_albums(artist, title):
+    """Fallback: find artist ID, then search their album catalog."""
+    try:
+        # Step 1: find the artist
+        encoded = urllib.parse.quote(artist)
+        url = f"https://itunes.apple.com/search?media=music&entity=musicArtist&limit=3&term={encoded}"
+        with urllib.request.urlopen(url, timeout=10) as resp:
+            data = json.load(resp)
+
+        for artist_result in data.get("results", []):
+            artist_id = artist_result.get("artistId")
+            if not artist_id:
+                continue
+
+            # Step 2: get their albums
+            lookup_url = f"https://itunes.apple.com/lookup?id={artist_id}&entity=album&limit=100"
+            with urllib.request.urlopen(lookup_url, timeout=10) as resp:
+                albums_data = json.load(resp)
+
+            # Step 3: find matching album by title
+            norm_title = normalize(title)
+            for r in albums_data.get("results", []):
+                if r.get("wrapperType") != "collection":
+                    continue
+                album_name = r.get("collectionName", "")
+                # Check if the title words appear in the album name
+                if words_overlap(title, album_name) >= 0.5:
+                    album_url = r.get("collectionViewUrl")
+                    return album_url, f"{r.get('artistName', '?')} — {album_name}"
+    except Exception:
+        pass
+    return None, None
+
+def search_with_fallbacks(artist, title):
+    """Try multiple search strategies to find the right album."""
+    # Strategy 1: full "Artist - Title" query
+    url, info = search_itunes_album(f"{artist} {title}", artist, title)
+    if url:
+        return url, info
+
+    # Strategy 2: clean special chars and retry
+    cleaned_artist = re.sub(r'[*"\'()&]', ' ', artist).strip()
+    cleaned_title = re.sub(r'[*"\'()]', '', title).strip()
+    url, info = search_itunes_album(f"{cleaned_artist} {cleaned_title}", artist, title)
+    if url:
+        return url, info
+
+    # Strategy 3: just the album title (helps when artist name is unusual)
+    url, info = search_itunes_album(cleaned_title, artist, title)
+    if url:
+        return url, info
+
+    # Strategy 4: artist catalog lookup (finds albums missing from search index)
+    url, info = search_artist_albums(artist, title)
+    if url:
+        return url, info
+
+    return None, None
+
+def add_to_musicbox(apple_music_url):
+    """Add a URL to MusicBox via its URL scheme (background)."""
+    encoded = urllib.parse.quote(apple_music_url, safe="")
+    musicbox_url = f"musicbox://add?url={encoded}"
+    subprocess.run(["open", "-g", musicbox_url], capture_output=True, timeout=5)
+
+def notify(title, message):
+    """Show a macOS notification."""
+    subprocess.run(["osascript", "-e",
+        f'display notification "{message}" with title "{title}"'],
+        capture_output=True, timeout=5)
+
+def main():
+    parser = argparse.ArgumentParser(description="Extract albums from an article and add to MusicBox")
+    parser.add_argument("url", nargs="?", help="URL to fetch (omit to read current Safari tab)")
+    parser.add_argument("--tag", help="Auto-tag all added items (e.g. 'yearly-list')")
+    parser.add_argument("--dry-run", action="store_true", help="Show what would be added without adding")
+    args = parser.parse_args()
+
+    # Step 1: Get article text
+    if args.url:
+        print(f"Fetching {args.url}...")
+        text = fetch_url_text(args.url)
+    else:
+        print("Reading current Safari tab...")
+        text = get_safari_text()
+
+    if not text or len(text) < 50:
+        sys.exit("No meaningful text found.")
+
+    print(f"Got {len(text):,} chars of text.")
+
+    # Step 2: Extract albums via Claude
+    print(f"Asking Claude ({MODEL}) to extract albums...")
+    albums = extract_albums(text)
+    print(f"\nFound {len(albums)} albums:")
+    for i, a in enumerate(albums, 1):
+        print(f"  {i:2}. {a}")
+    print()
+
+    if args.dry_run:
+        print("Dry run — searching iTunes but not adding to MusicBox.\n")
+
+    # Step 3: Search iTunes for each album
+    found_urls = []
+    skipped = []
+    for entry in albums:
+        parts = entry.split(" - ", 1)
+        artist = parts[0].strip() if len(parts) == 2 else ""
+        title = parts[1].strip() if len(parts) == 2 else entry
+
+        # Search with verification and fallbacks
+        apple_url, match_info = search_with_fallbacks(artist, title)
+
+        if apple_url:
+            print(f"  + {entry}")
+            print(f"    -> {match_info}")
+            found_urls.append(apple_url)
+        else:
+            print(f"  x {entry} (not found on Apple Music)")
+            skipped.append(entry)
+
+    # Step 4: Add all to MusicBox in one batch dialog
+    if found_urls and not args.dry_run:
+        print(f"\nOpening {len(found_urls)} albums in MusicBox (single dialog)...")
+        joined = "\n".join(found_urls)
+        encoded = urllib.parse.quote(joined, safe="")
+        subprocess.run(["open", f"musicbox://add?url={encoded}"], capture_output=True, timeout=5)
+
+    # Summary
+    verb = "Would add" if args.dry_run else "Sent"
+    summary = f"{verb} {len(found_urls)}/{len(albums)} to MusicBox."
+    print(f"\nDone! {summary}")
+    if skipped:
+        print(f"Skipped {len(skipped)}:")
+        for s in skipped:
+            print(f"  - {s}")
+
+    # macOS notification (useful when run from Share Sheet with no terminal)
+    if not args.dry_run and found_urls:
+        skip_note = f" ({len(skipped)} not found)" if skipped else ""
+        notify("MusicBox Add", f"Added {len(found_urls)} albums{skip_note}")
+
+if __name__ == "__main__":
+    main()
