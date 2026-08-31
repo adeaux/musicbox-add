@@ -14,7 +14,7 @@ Usage:
         --dry-run       Show what would be added without actually adding
 
     Environment:
-        ANTHROPIC_API_KEY  — required (or set in ~/.zshrc)
+        ANTHROPIC_API_KEY  — optional override; default is read from ~/.config/musicbox/api_key
         MUSICBOX_MODEL     — optional, default: claude-haiku-4-5-20251001
 """
 
@@ -22,7 +22,12 @@ import json, os, subprocess, sys, time, urllib.request, urllib.parse, urllib.err
 
 API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 if not API_KEY:
-    sys.exit("Set ANTHROPIC_API_KEY environment variable. Get one at https://console.anthropic.com/")
+    _key_file = os.path.expanduser("~/.config/musicbox/api_key")
+    if os.path.exists(_key_file):
+        with open(_key_file) as _f:
+            API_KEY = _f.read().strip()
+if not API_KEY:
+    sys.exit("Set ANTHROPIC_API_KEY or put a key in ~/.config/musicbox/api_key. Get one at https://console.anthropic.com/")
 MODEL = os.environ.get("MUSICBOX_MODEL", "claude-haiku-4-5-20251001")
 CLAUDE_URL = "https://api.anthropic.com/v1/messages"
 

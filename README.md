@@ -31,11 +31,13 @@ chmod +x musicbox-add
 # Symlink to home directory (or anywhere in your PATH)
 ln -sf "$(pwd)/musicbox-add" ~/musicbox-add
 
-# Set your API key (add to ~/.zshrc for persistence)
-export ANTHROPIC_API_KEY="sk-ant-..."
+# Store your API key in the config file the script reads by default
+mkdir -p ~/.config/musicbox
+echo "sk-ant-..." > ~/.config/musicbox/api_key
+chmod 600 ~/.config/musicbox/api_key
 ```
 
-The script has a hardcoded fallback API key for convenience, but you should set your own via the environment variable.
+The key file keeps `ANTHROPIC_API_KEY` out of your shell profile, so tools that switch behavior when that variable is set (like Claude Code's auth) are unaffected. Setting the environment variable still works and takes precedence over the file.
 
 ## Usage
 
@@ -64,7 +66,7 @@ Then just type `musicbox` in Alfred with a music article open in Safari.
 
 | Environment variable | Default | Description |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | (hardcoded fallback) | Your Anthropic API key |
+| `ANTHROPIC_API_KEY` | read from `~/.config/musicbox/api_key` | Your Anthropic API key |
 | `MUSICBOX_MODEL` | `claude-haiku-4-5-20251001` | Claude model to use |
 
 ## How matching works
