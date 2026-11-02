@@ -24,9 +24,8 @@ def albums(n=1):
 
 @pytest.fixture
 def opened():
-    with mock.patch.object(m.musicbox_core, "add_many_to_musicbox") as add, \
+    with mock.patch.object(m, "_run_shortcut", return_value="An Album") as add, \
          mock.patch("subprocess.run") as run:
-        add.return_value = mock.Mock(returncode=0)
         yield add, run
 
 
@@ -40,13 +39,13 @@ def test_dry_run_default_opens_nothing(opened):
     run.assert_not_called()
 
 
-def test_real_run_one_open_call(opened):
+def test_real_run_saves_each_match(opened):
     add, _ = opened
     with mock.patch.object(m.musicbox_core, "search_with_fallbacks", side_effect=[HIT, HIT, (None, None)]), \
          mock.patch.object(m, "_gui_session_available", return_value=True):
         out = text(call({"albums": albums(3), "dry_run": False}))
-    add.assert_called_once_with([HIT[0], HIT[0]])
-    assert "with 2 of 3 albums" in out and "until someone clicks Import" in out and "A2 - B2" in out
+    assert add.call_args_list == [mock.call(HIT[0]), mock.call(HIT[0])]
+    assert out.startswith("Added 2 of 3 albums to MusicBox.") and "A2 - B2" in out
 
 
 def test_real_run_no_matches_opens_nothing(opened):
@@ -92,18 +91,41 @@ def test_an_unexpected_search_failure_is_plain(opened):
             call({"albums": albums(1)})
 
 
-def test_musicbox_failing_to_open_is_reported(opened):
+def test_every_save_failing_is_an_error(opened):
     add, _ = opened
-    add.return_value = mock.Mock(returncode=1)
+    add.return_value = None
     with mock.patch.object(m.musicbox_core, "search_with_fallbacks", return_value=HIT), \
          mock.patch.object(m, "_gui_session_available", return_value=True):
-        with pytest.raises(ToolError, match="Couldn't open MusicBox"):
+        with pytest.raises(ToolError, match="failed for every album"):
             call({"albums": albums(1), "dry_run": False})
+
+
+def test_some_saves_failing_are_reported(opened):
+    add, _ = opened
+    add.side_effect = ["An Album", None]
+    with mock.patch.object(m.musicbox_core, "search_with_fallbacks", return_value=HIT), \
+         mock.patch.object(m, "_gui_session_available", return_value=True):
+        out = text(call({"albums": albums(2), "dry_run": False}))
+    assert "Added 1 of 2" in out and "Failed to add (1)" in out and "A1 - B1" in out
+
+
+def test_the_shortcut_gets_the_url_as_a_txt_file():
+    def fake_run(cmd, **kwargs):
+        source = cmd[cmd.index("--input-path") + 1]
+        assert source.endswith(".txt") and open(source).read() == HIT[0]
+        out = cmd[cmd.index("--output-path") + 1]
+        open(out, "w").write("Some Album\n")
+        return mock.Mock(returncode=0)
+
+    with mock.patch("subprocess.run", side_effect=fake_run):
+        assert m._run_shortcut(HIT[0]) == "Some Album"
+    with mock.patch("subprocess.run", return_value=mock.Mock(returncode=1)):
+        assert m._run_shortcut(HIT[0]) is None
 
 
 def test_too_many_and_empty_rejected(opened):
     with pytest.raises(ToolError):
-        call({"albums": albums(51)})
+        call({"albums": albums(m.MAX_ALBUMS + 1)})
     with pytest.raises(ToolError):
         call({"albums": []})
 

@@ -1,8 +1,17 @@
 """MCP server exposing one tool, add_albums, that finds albums on Apple Music
-and opens them in MusicBox. Runs over stdio."""
+and saves them to MusicBox. Runs over stdio.
+
+MusicBox's own "Add Music" Shortcuts action saves an album with no dialog, so a
+real run calls a one-action Shortcut once per album:
+    shortcuts run "<MUSICBOX_SHORTCUT>" --input-path <file with the album URL>
+The Shortcut takes the URL as input, passes it to Add Music and outputs the added
+music (its title comes back as plain text). MUSICBOX_SHORTCUT names it (default
+"Duet: Add Music to MusicBox")."""
 
 import os
 import subprocess
+import tempfile
+from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
@@ -10,7 +19,11 @@ from pydantic import BaseModel, StrictBool
 
 import musicbox_core
 
-MAX_ALBUMS = 50
+# Each save takes about 6 seconds, so a call stays a few minutes at most.
+MAX_ALBUMS = 20
+RUN_TIMEOUT_S = 30
+SHORTCUT = os.environ.get("MUSICBOX_SHORTCUT", "Duet: Add Music to MusicBox")
+SHORTCUTS_CLI = "/usr/bin/shortcuts"
 
 mcp = FastMCP("musicbox")
 
@@ -39,6 +52,25 @@ def _current_user():
     return getpass.getuser()
 
 
+def _run_shortcut(url):
+    """Save one album through the Shortcut. Returns what it output, or None if the run failed."""
+    with tempfile.TemporaryDirectory() as tmp:
+        # The .txt extension makes Shortcuts read the file's text, not the file itself.
+        source, result = Path(tmp, "album.txt"), Path(tmp, "result.txt")
+        source.write_text(url)
+        try:
+            proc = subprocess.run(
+                [SHORTCUTS_CLI, "run", SHORTCUT, "--input-path", str(source),
+                 "--output-path", str(result), "--output-type", "public.plain-text"],
+                capture_output=True, text=True, timeout=RUN_TIMEOUT_S,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if proc.returncode != 0:
+            return None
+        return result.read_text().strip() if result.exists() else ""
+
+
 def _describe(matches, misses):
     lines = []
     if matches:
@@ -54,13 +86,11 @@ def _describe(matches, misses):
 
 @mcp.tool()
 def add_albums(albums: list[Album], dry_run: StrictBool = True) -> str:
-    """Find albums on Apple Music and add them to MusicBox.
+    """Find albums on Apple Music and save them to MusicBox.
 
     dry_run defaults to true: it only reports what would be added. Pass a real
-    boolean false to open the albums in MusicBox's Add Music window (one dialog).
-    MusicBox saves them only when someone clicks Import in that window on the
-    Mac, so a real run queues albums; it does not finish adding them. Requires a
-    logged-in desktop session on the Mac.
+    boolean false to save the matches to MusicBox; each is added with no dialog.
+    At most 20 albums per call. Requires a logged-in desktop session on the Mac.
     """
     if not 1 <= len(albums) <= MAX_ALBUMS:
         raise ToolError(f"Send between 1 and {MAX_ALBUMS} albums.")
@@ -88,22 +118,24 @@ def add_albums(albums: list[Album], dry_run: StrictBool = True) -> str:
     if dry_run:
         return "Dry run, nothing added.\n" + _describe(matches, misses)
 
-    if matches:
-        if not _gui_session_available():
-            raise ToolError("MusicBox can't be opened: nobody is logged in to the Mac's desktop.")
-        try:
-            opened = musicbox_core.add_many_to_musicbox([m["url"] for m in matches])
-        except Exception:
-            opened = None
-        if opened is None or opened.returncode != 0:
-            raise ToolError("Couldn't open MusicBox. Is it installed?")
-        head = (
-            f"Opened MusicBox's Add Music window on the Mac with {len(matches)} of "
-            f"{len(cleaned)} albums. Nothing is saved until someone clicks Import there."
+    if not matches:
+        return "Nothing to add: no albums were found on Apple Music.\n" + _describe(matches, misses)
+    if not _gui_session_available():
+        raise ToolError("MusicBox can't be reached: nobody is logged in to the Mac's desktop.")
+
+    added, failed = [], []
+    for m in matches:
+        (failed if _run_shortcut(m["url"]) is None else added).append(m)
+    if not added:
+        raise ToolError(
+            f"Adding to MusicBox failed for every album. Check that the '{SHORTCUT}' "
+            "shortcut exists on the Mac and that MusicBox is installed."
         )
-    else:
-        head = "Nothing to add: no albums were found on Apple Music."
-    return head + "\n" + _describe(matches, misses)
+    head = f"Added {len(added)} of {len(cleaned)} albums to MusicBox."
+    if failed:
+        head += f"\nFailed to add ({len(failed)}):\n" + "\n".join(
+            f"  - {m['artist']} - {m['album']} ({m['url']})" for m in failed)
+    return head + "\n" + _describe(added, misses)
 
 
 def main():
