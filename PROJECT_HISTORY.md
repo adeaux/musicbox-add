@@ -67,6 +67,14 @@ A ~150-line Python script that does everything the Shortcut tried to do, but rel
 - **Terminal:** `musicbox-add` or `musicbox-add --dry-run`
 - **Repo:** [github.com/adeaux/musicbox-add](https://github.com/adeaux/musicbox-add)
 
+## Phase 3: MCP server with tags and links (0.3.0)
+
+The MCP server first took only artist and album, searched Apple Music, and saved untagged. 0.3.0 lets an item be a link from any service, adds per-item and shared tags plus notes, refuses a real run with an untagged item, and adds `list_tags` so new music reuses existing tag names.
+
+- MusicBox's `AddMusicAppIntent` already takes url, tags and notes, so no new app support was needed, only a Shortcut that passes them through.
+- The Shortcut receives one JSON object per item and looks each tag up by name with Find Tag, creating it when missing. Tags are entities in Shortcuts, not strings, which is why the lookup lives in the Shortcut.
+- The default Shortcut name changed to `Duet: Add Tagged Music to MusicBox`, so an un-updated Mac fails loudly instead of saving without tags. The old Shortcut's Get URLs from Input would have pulled the URL out of the JSON and quietly dropped the tags.
+
 ## Lessons Learned
 
 ### When to use Shortcuts vs. scripts
@@ -87,6 +95,6 @@ A ~150-line Python script that does everything the Shortcut tried to do, but rel
 - Team ID: `SJF85Q6EJ9`
 - URL schemes: `musicbox://add?url=<url>`, `musicboxopenitem://<url>`
 - Batch add: newline-delimited URLs in a single `musicbox://add?url=` call
-- AppIntents: `AddMusicAppIntent` (url, tags, notes), `AddMusicManuallyAppIntent`, `GetMusic`, `CreateTag`, `MarkAsPlayed`, `DeleteMusic`, `AddTagAppIntent`
+- AppIntents: `AddMusicAppIntent` (url, tags, notes; tags can also be set to Ask Each Time), `AddMusicManuallyAppIntent`, `GetMusic`, `CreateTag`, `MarkAsPlayed`, `DeleteMusic`, `AddTagAppIntent`
 - `openAppWhenRun: false` on most intents — designed for background execution
 - App data stored in CloudKit (no local SQLite to write to)
