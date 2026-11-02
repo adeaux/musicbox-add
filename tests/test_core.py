@@ -1,3 +1,4 @@
+import pytest
 import io, json
 from unittest import mock
 
@@ -35,12 +36,12 @@ def _resp(payload):
 def test_fallback_order():
     calls = []
 
-    def fake_search(q, a="", t="", verify=True):
+    def fake_search(q, a="", t="", verify=True, strict=False):
         calls.append(q)
         return (None, None)
 
     with mock.patch.object(c, "search_itunes_album", fake_search), \
-         mock.patch.object(c, "search_artist_albums", lambda a, t: ("u", "info")) as _:
+         mock.patch.object(c, "search_artist_albums", lambda a, t, strict=False: ("u", "info")) as _:
         assert c.search_with_fallbacks("A&B", 'T"x"') == ("u", "info")
     assert calls == ["A&B T\"x\"", "A B Tx", "Tx"]
 
@@ -71,3 +72,26 @@ def test_add_many_single_open_call():
         c.add_many_to_musicbox(["https://a", "https://b"])
     run.assert_called_once()
     assert run.call_args[0][0] == ["open", "musicbox://add?url=https%3A%2F%2Fa%0Ahttps%3A%2F%2Fb"]
+
+
+def test_outage_reads_as_not_found_for_the_cli_but_raises_when_strict():
+    import urllib.error
+    from unittest import mock
+
+    import musicbox_core as core
+
+    with mock.patch("urllib.request.urlopen", side_effect=urllib.error.URLError("down")):
+        assert core.search_with_fallbacks("Artist", "Album") == (None, None)
+        with pytest.raises(core.SearchUnavailable):
+            core.search_with_fallbacks("Artist", "Album", strict=True)
+
+
+def test_add_many_returns_the_open_process():
+    from unittest import mock
+
+    import musicbox_core as core
+
+    with mock.patch("subprocess.run", return_value=mock.Mock(returncode=0)) as run:
+        assert core.add_many_to_musicbox(["u1", "u2"]).returncode == 0
+    run.assert_called_once()
+    assert run.call_args.args[0][1] == "musicbox://add?url=u1%0Au2"

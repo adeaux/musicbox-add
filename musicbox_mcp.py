@@ -72,16 +72,16 @@ def add_albums(albums: list[Album], dry_run: StrictBool = True) -> str:
     matches, misses = [], []
     try:
         for artist, album in cleaned:
-            url, info = musicbox_core.search_with_fallbacks(artist, album)
+            url, info = musicbox_core.search_with_fallbacks(artist, album, strict=True)
             entry = {"artist": artist, "album": album}
             if url:
                 matches.append({**entry, "matched": info, "url": url})
             else:
                 misses.append(entry)
-    except ToolError:
-        raise
+    except musicbox_core.SearchUnavailable:
+        raise ToolError("Couldn't reach the iTunes search service, so nothing was looked up. Try again later.")
     except Exception:
-        raise ToolError("Couldn't reach the iTunes search service. Try again later.")
+        raise ToolError("Searching for the albums failed unexpectedly. Try again later.")
 
     if dry_run:
         return "Dry run, nothing added.\n" + _describe(matches, misses)
@@ -90,8 +90,10 @@ def add_albums(albums: list[Album], dry_run: StrictBool = True) -> str:
         if not _gui_session_available():
             raise ToolError("MusicBox can't be opened: nobody is logged in to the Mac's desktop.")
         try:
-            musicbox_core.add_many_to_musicbox([m["url"] for m in matches])
+            opened = musicbox_core.add_many_to_musicbox([m["url"] for m in matches])
         except Exception:
+            opened = None
+        if opened is None or opened.returncode != 0:
             raise ToolError("Couldn't open MusicBox. Is it installed?")
         head = f"Sent {len(matches)} of {len(cleaned)} to MusicBox."
     else:

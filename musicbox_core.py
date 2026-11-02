@@ -47,7 +47,17 @@ def is_good_match(search_artist, search_title, result_artist, result_album):
 
     return False
 
-def search_itunes_album(query, search_artist="", search_title="", verify=True):
+class SearchUnavailable(Exception):
+    """The iTunes Search API could not be reached or answered with garbage."""
+
+
+# Network and parse failures. With strict=False (the CLI) they read as "not found",
+# as before; with strict=True they raise SearchUnavailable so a caller can tell an
+# outage from a real miss.
+_SEARCH_FAILURES = (urllib.error.URLError, TimeoutError, OSError, ValueError)
+
+
+def search_itunes_album(query, search_artist="", search_title="", verify=True, strict=False):
     """Search iTunes for an album and return the Apple Music album URL."""
     encoded = urllib.parse.quote(query)
     url = f"https://itunes.apple.com/search?media=music&entity=album&limit=5&term={encoded}"
@@ -60,11 +70,14 @@ def search_itunes_album(query, search_artist="", search_title="", verify=True):
             artist_name = result.get("artistName", "")
             if not verify or is_good_match(search_artist, search_title, artist_name, album_name):
                 return album_url, f"{artist_name} — {album_name}"
+    except _SEARCH_FAILURES as exc:
+        if strict:
+            raise SearchUnavailable(str(exc)) from exc
     except Exception:
         pass
     return None, None
 
-def search_artist_albums(artist, title):
+def search_artist_albums(artist, title, strict=False):
     """Fallback: find artist ID, then search their album catalog."""
     try:
         # Step 1: find the artist
@@ -93,31 +106,34 @@ def search_artist_albums(artist, title):
                 if words_overlap(title, album_name) >= 0.5:
                     album_url = r.get("collectionViewUrl")
                     return album_url, f"{r.get('artistName', '?')} — {album_name}"
+    except _SEARCH_FAILURES as exc:
+        if strict:
+            raise SearchUnavailable(str(exc)) from exc
     except Exception:
         pass
     return None, None
 
-def search_with_fallbacks(artist, title):
+def search_with_fallbacks(artist, title, strict=False):
     """Try multiple search strategies to find the right album."""
     # Strategy 1: full "Artist - Title" query
-    url, info = search_itunes_album(f"{artist} {title}", artist, title)
+    url, info = search_itunes_album(f"{artist} {title}", artist, title, strict=strict)
     if url:
         return url, info
 
     # Strategy 2: clean special chars and retry
     cleaned_artist = re.sub(r'[*"\'()&]', ' ', artist).strip()
     cleaned_title = re.sub(r'[*"\'()]', '', title).strip()
-    url, info = search_itunes_album(f"{cleaned_artist} {cleaned_title}", artist, title)
+    url, info = search_itunes_album(f"{cleaned_artist} {cleaned_title}", artist, title, strict=strict)
     if url:
         return url, info
 
     # Strategy 3: just the album title (helps when artist name is unusual)
-    url, info = search_itunes_album(cleaned_title, artist, title)
+    url, info = search_itunes_album(cleaned_title, artist, title, strict=strict)
     if url:
         return url, info
 
     # Strategy 4: artist catalog lookup (finds albums missing from search index)
-    url, info = search_artist_albums(artist, title)
+    url, info = search_artist_albums(artist, title, strict=strict)
     if url:
         return url, info
 
@@ -130,7 +146,11 @@ def add_to_musicbox(apple_music_url):
     subprocess.run(["open", "-g", musicbox_url], capture_output=True, timeout=5)
 
 def add_many_to_musicbox(apple_music_urls):
-    """Open all URLs in MusicBox via one musicbox://add call (single dialog)."""
+    """Open all URLs in MusicBox via one musicbox://add call (single dialog).
+
+    Returns the finished `open` process; a non-zero returncode means MusicBox
+    could not be opened.
+    """
     joined = "\n".join(apple_music_urls)
     encoded = urllib.parse.quote(joined, safe="")
-    subprocess.run(["open", f"musicbox://add?url={encoded}"], capture_output=True, timeout=5)
+    return subprocess.run(["open", f"musicbox://add?url={encoded}"], capture_output=True, timeout=5)

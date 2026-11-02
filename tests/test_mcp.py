@@ -26,6 +26,7 @@ def albums(n=1):
 def opened():
     with mock.patch.object(m.musicbox_core, "add_many_to_musicbox") as add, \
          mock.patch("subprocess.run") as run:
+        add.return_value = mock.Mock(returncode=0)
         yield add, run
 
 
@@ -75,12 +76,29 @@ def test_no_gui_session(opened):
     add.assert_not_called()
 
 
-def test_network_error_is_plain(opened):
+def test_an_itunes_outage_is_an_error_not_a_miss(opened):
+    """The real search runs; only the network is down."""
     import urllib.error
-    with mock.patch.object(m.musicbox_core, "search_with_fallbacks",
-                           side_effect=urllib.error.URLError("boom")):
-        with pytest.raises(ToolError, match="iTunes"):
+    add, _ = opened
+    with mock.patch("urllib.request.urlopen", side_effect=urllib.error.URLError("down")):
+        with pytest.raises(ToolError, match="Couldn't reach the iTunes search service"):
+            call({"albums": albums(1), "dry_run": False})
+    add.assert_not_called()
+
+
+def test_an_unexpected_search_failure_is_plain(opened):
+    with mock.patch.object(m.musicbox_core, "search_with_fallbacks", side_effect=KeyError("x")):
+        with pytest.raises(ToolError, match="failed unexpectedly"):
             call({"albums": albums(1)})
+
+
+def test_musicbox_failing_to_open_is_reported(opened):
+    add, _ = opened
+    add.return_value = mock.Mock(returncode=1)
+    with mock.patch.object(m.musicbox_core, "search_with_fallbacks", return_value=HIT), \
+         mock.patch.object(m, "_gui_session_available", return_value=True):
+        with pytest.raises(ToolError, match="Couldn't open MusicBox"):
+            call({"albums": albums(1), "dry_run": False})
 
 
 def test_too_many_and_empty_rejected(opened):
