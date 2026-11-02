@@ -1,0 +1,23 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "musicbox-add"
+version = "0.2.0"
+description = "Add albums to MusicBox from the command line or over MCP"
+requires-python = ">=3.12"
+dependencies = ["mcp[cli]>=1.30,<2"]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+musicbox-mcp = "musicbox_mcp:main"
+
+[tool.hatch.build.targets.wheel]
+only-include = ["musicbox_core.py", "musicbox_mcp.py"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
