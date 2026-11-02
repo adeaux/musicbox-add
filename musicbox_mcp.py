@@ -57,7 +57,9 @@ def add_albums(albums: list[Album], dry_run: StrictBool = True) -> str:
     """Find albums on Apple Music and add them to MusicBox.
 
     dry_run defaults to true: it only reports what would be added. Pass a real
-    boolean false to open the albums in MusicBox (one dialog). Requires a
+    boolean false to open the albums in MusicBox's Add Music window (one dialog).
+    MusicBox saves them only when someone clicks Import in that window on the
+    Mac, so a real run queues albums; it does not finish adding them. Requires a
     logged-in desktop session on the Mac.
     """
     if not 1 <= len(albums) <= MAX_ALBUMS:
@@ -95,7 +97,10 @@ def add_albums(albums: list[Album], dry_run: StrictBool = True) -> str:
             opened = None
         if opened is None or opened.returncode != 0:
             raise ToolError("Couldn't open MusicBox. Is it installed?")
-        head = f"Sent {len(matches)} of {len(cleaned)} to MusicBox."
+        head = (
+            f"Opened MusicBox's Add Music window on the Mac with {len(matches)} of "
+            f"{len(cleaned)} albums. Nothing is saved until someone clicks Import there."
+        )
     else:
         head = "Nothing to add: no albums were found on Apple Music."
     return head + "\n" + _describe(matches, misses)

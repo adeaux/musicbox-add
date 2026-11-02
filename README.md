@@ -54,7 +54,7 @@ The key file keeps `ANTHROPIC_API_KEY` out of your shell profile, so tools that 
 
 ## MCP server
 
-`musicbox-mcp` is a stdio [MCP](https://modelcontextprotocol.io) server exposing one tool, `add_albums(albums, dry_run=true)`. It takes up to 50 `{artist, album}` pairs, finds each on Apple Music with the same matching as the CLI, and opens all matches in MusicBox in a single dialog. It does not read Safari or call Anthropic, so it needs no API key.
+`musicbox-mcp` is a stdio [MCP](https://modelcontextprotocol.io) server exposing one tool, `add_albums(albums, dry_run=true)`. It takes up to 50 `{artist, album}` pairs, finds each on Apple Music with the same matching as the CLI, and opens all matches in MusicBox in a single Add Music dialog. MusicBox only saves them when someone clicks Import in that dialog, so a real run queues albums for confirmation at the Mac; it does not finish adding them. It does not read Safari or call Anthropic, so it needs no API key.
 
 - `dry_run` defaults to true and only reports matches and misses. Only a real boolean `false` performs the add.
 - Adding needs a logged-in desktop session on the Mac; otherwise the tool returns an error and opens nothing.

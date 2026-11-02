@@ -46,7 +46,7 @@ def test_real_run_one_open_call(opened):
          mock.patch.object(m, "_gui_session_available", return_value=True):
         out = text(call({"albums": albums(3), "dry_run": False}))
     add.assert_called_once_with([HIT[0], HIT[0]])
-    assert "Sent 2 of 3" in out and "A2 - B2" in out
+    assert "with 2 of 3 albums" in out and "until someone clicks Import" in out and "A2 - B2" in out
 
 
 def test_real_run_no_matches_opens_nothing(opened):
