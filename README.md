@@ -52,6 +52,21 @@ The key file keeps `ANTHROPIC_API_KEY` out of your shell profile, so tools that 
 ~/musicbox-add https://example.com/best-albums-2024
 ```
 
+## MCP server
+
+`musicbox-mcp` is a stdio [MCP](https://modelcontextprotocol.io) server exposing one tool, `add_albums(albums, dry_run=true)`. It takes up to 20 `{artist, album}` pairs, finds each on Apple Music with the same matching as the CLI, and saves the matches to MusicBox with no dialog. It does not read Safari or call Anthropic, so it needs no API key.
+
+- `dry_run` defaults to true and only reports matches and misses. Only a real boolean `false` performs the add.
+- Saving goes through MusicBox's own "Add Music" Shortcuts action, which adds an album without the Import dialog that the `musicbox://add` URL scheme opens. Make a Shortcut that receives input, runs Get URLs from Input, passes the URLs to MusicBox's Add Music, and stops and outputs the result. Name it `Duet: Add Music to MusicBox`, or set `MUSICBOX_SHORTCUT` to its name. The tool runs it once per album with `shortcuts run`, about 6 seconds each.
+- Adding needs a logged-in desktop session on the Mac; otherwise the tool returns an error and saves nothing.
+
+```bash
+uv tool install .
+musicbox-mcp   # speaks MCP over stdio; point your MCP client at this command
+```
+
+The shared search and matching code lives in `musicbox_core.py`.
+
 ## Alfred integration
 
 Create an Alfred workflow with a keyword trigger (`musicbox`) that runs:
