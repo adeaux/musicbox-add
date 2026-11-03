@@ -82,7 +82,10 @@ def _shortcut(name, payload=None):
             cmd += ["--input-path", str(source)]
         cmd += ["--output-path", str(result), "--output-type", "public.plain-text"]
         try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=RUN_TIMEOUT_S)
+            # Without an input file, `shortcuts run` reads stdin. Here stdin is the MCP
+            # connection, so leaving it open hangs the run and can eat protocol bytes.
+            proc = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True,
+                                  text=True, timeout=RUN_TIMEOUT_S)
         except (OSError, subprocess.SubprocessError):
             return None
         if proc.returncode != 0:

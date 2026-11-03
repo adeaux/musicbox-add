@@ -1,5 +1,6 @@
 import asyncio
 import json
+import subprocess
 from unittest import mock
 
 import pytest
@@ -207,3 +208,11 @@ def test_list_tags():
          mock.patch.object(m, "_shortcut", return_value=None):
         with pytest.raises(ToolError, match="Reading tags failed"):
             asyncio.run(m.mcp.call_tool("list_tags", {}))
+
+
+@pytest.mark.parametrize("payload", [None, "{}"])
+def test_shortcuts_never_read_the_mcp_connection(payload):
+    """`shortcuts run` reads stdin when given no input file; stdin is the MCP pipe."""
+    with mock.patch("subprocess.run", return_value=mock.Mock(returncode=0)) as run:
+        m._shortcut(m.TAGS_SHORTCUT, payload)
+    assert run.call_args.kwargs["stdin"] is subprocess.DEVNULL

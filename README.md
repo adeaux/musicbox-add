@@ -75,7 +75,7 @@ Returns the tag names already in MusicBox, one per line, so a client can reuse t
 
 ### The two Shortcuts
 
-Saving goes through MusicBox's own Shortcuts actions, which work without the Import dialog that the `musicbox://add` URL scheme opens. The server runs each Shortcut with `shortcuts run`, about 6 seconds per item.
+Saving goes through MusicBox's own Shortcuts actions, which work without the Import dialog that the `musicbox://add` URL scheme opens. The server runs each Shortcut with `shortcuts run`, about 6 seconds per item. It closes the command's stdin: given no input file, `shortcuts run` waits on stdin, which inside the server is the MCP connection. To try the tag list by hand, run `shortcuts run "Duet: List MusicBox Tags" < /dev/null`.
 
 **Duet: Add Tagged Music to MusicBox** (or set `MUSICBOX_SHORTCUT`). The server passes it a text file holding `{"url": "...", "tags": ["..."], "notes": "..."}`.
 
@@ -88,7 +88,7 @@ Saving goes through MusicBox's own Shortcuts actions, which work without the Imp
 4. MusicBox **Add Music** with the URL, Tags set to the `Tags` variable, and Notes.
 5. **Stop and Output** the result of Add Music.
 
-**Duet: List MusicBox Tags** (or set `MUSICBOX_TAGS_SHORTCUT`): MusicBox **Find Tag** with no filter, **Get Name** of each, **Combine Text** with new lines, **Stop and Output**.
+**Duet: List MusicBox Tags** (or set `MUSICBOX_TAGS_SHORTCUT`): MusicBox **Find Tag** with no filter, sorted by Name, **Get Name** of each, **Combine Text** with new lines, **Stop and Output**.
 
 Until both exist, `add_albums` reports that the shortcut is missing and saves nothing, and dry runs say tags couldn't be checked.
 
