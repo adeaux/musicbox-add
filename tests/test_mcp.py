@@ -182,7 +182,7 @@ def test_untagged_items_are_refused_on_a_real_run(opened):
 
 def test_dry_run_flags_new_and_missing_tags(opened):
     out = text(call({"albums": [{"url": LINK, "tags": ["techno", "mixes"]}, {"url": LINK}]}))
-    assert "tags: Techno, mixes" in out
+    assert f"  - {LINK} tags: Techno, mixes" in out
     assert "New tags that would be created: mixes" in out
     assert "1 item(s) have no tags" in out
 

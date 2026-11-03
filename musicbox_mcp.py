@@ -143,7 +143,8 @@ def _describe(matches, misses):
         for m in matches:
             found = f" -> {m['matched']}" if m.get("matched") else ""
             tags = ", ".join(m["tags"]) or "none"
-            lines.append(f"  - {_label(m)}{found} ({m['url']}) tags: {tags}")
+            link = "" if _label(m) == m["url"] else f" ({m['url']})"
+            lines.append(f"  - {_label(m)}{found}{link} tags: {tags}")
     if misses:
         lines.append(f"Not found on Apple Music ({len(misses)}); send a link for these instead:")
         for m in misses:
