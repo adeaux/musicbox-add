@@ -1,4 +1,6 @@
 import asyncio
+import json
+import subprocess
 from unittest import mock
 
 import pytest
@@ -18,13 +20,14 @@ def text(result):
     return content[0].text
 
 
-def albums(n=1):
-    return [{"artist": f"A{i}", "album": f"B{i}"} for i in range(n)]
+def albums(n=1, tags=("techno",)):
+    return [{"artist": f"A{i}", "album": f"B{i}", "tags": list(tags)} for i in range(n)]
 
 
 @pytest.fixture
 def opened():
     with mock.patch.object(m, "_run_shortcut", return_value="An Album") as add, \
+         mock.patch.object(m, "_existing_tags", return_value=["Techno", "Ambient"]), \
          mock.patch("subprocess.run") as run:
         yield add, run
 
@@ -44,8 +47,8 @@ def test_real_run_saves_each_match(opened):
     with mock.patch.object(m.musicbox_core, "search_with_fallbacks", side_effect=[HIT, HIT, (None, None)]), \
          mock.patch.object(m, "_gui_session_available", return_value=True):
         out = text(call({"albums": albums(3), "dry_run": False}))
-    assert add.call_args_list == [mock.call(HIT[0]), mock.call(HIT[0])]
-    assert out.startswith("Added 2 of 3 albums to MusicBox.") and "A2 - B2" in out
+    assert add.call_args_list == [mock.call(HIT[0], ["Techno"], ""), mock.call(HIT[0], ["Techno"], "")]
+    assert out.startswith("Added 2 of 3 items to MusicBox.") and "A2 - B2" in out
 
 
 def test_real_run_no_matches_opens_nothing(opened):
@@ -96,7 +99,7 @@ def test_every_save_failing_is_an_error(opened):
     add.return_value = None
     with mock.patch.object(m.musicbox_core, "search_with_fallbacks", return_value=HIT), \
          mock.patch.object(m, "_gui_session_available", return_value=True):
-        with pytest.raises(ToolError, match="failed for every album"):
+        with pytest.raises(ToolError, match="failed for every item"):
             call({"albums": albums(1), "dry_run": False})
 
 
@@ -109,23 +112,25 @@ def test_some_saves_failing_are_reported(opened):
     assert "Added 1 of 2" in out and "Failed to add (1)" in out and "A1 - B1" in out
 
 
-def test_the_shortcut_gets_the_url_as_a_txt_file():
+def test_the_shortcut_gets_url_tags_and_notes_as_json_in_a_txt_file():
     def fake_run(cmd, **kwargs):
+        assert cmd[2] == m.SHORTCUT
         source = cmd[cmd.index("--input-path") + 1]
-        assert source.endswith(".txt") and open(source).read() == HIT[0]
+        assert source.endswith(".txt")
+        assert json.loads(open(source).read()) == {"url": HIT[0], "tags": ["Techno"], "notes": "n"}
         out = cmd[cmd.index("--output-path") + 1]
         open(out, "w").write("Some Album\n")
         return mock.Mock(returncode=0)
 
     with mock.patch("subprocess.run", side_effect=fake_run):
-        assert m._run_shortcut(HIT[0]) == "Some Album"
+        assert m._run_shortcut(HIT[0], ["Techno"], "n") == "Some Album"
     with mock.patch("subprocess.run", return_value=mock.Mock(returncode=1)):
-        assert m._run_shortcut(HIT[0]) is None
+        assert m._run_shortcut(HIT[0], ["Techno"], "n") is None
 
 
 def test_too_many_and_empty_rejected(opened):
     with pytest.raises(ToolError):
-        call({"albums": albums(m.MAX_ALBUMS + 1)})
+        call({"albums": albums(m.MAX_ITEMS + 1)})
     with pytest.raises(ToolError):
         call({"albums": []})
 
@@ -133,3 +138,81 @@ def test_too_many_and_empty_rejected(opened):
 def test_blank_strings_rejected(opened):
     with pytest.raises(ToolError):
         call({"albums": [{"artist": "  ", "album": "x"}]})
+    with pytest.raises(ToolError, match="blank"):
+        call({"albums": albums(1, tags=["  "])})
+
+
+LINK = "https://soundcloud.com/someone/a-mix"
+
+
+def test_a_link_is_saved_as_is_without_searching(opened):
+    add, _ = opened
+    with mock.patch.object(m.musicbox_core, "search_with_fallbacks") as s, \
+         mock.patch.object(m, "_gui_session_available", return_value=True):
+        out = text(call({"albums": [{"url": LINK, "tags": ["mixes"], "notes": "1988 tape"}],
+                         "dry_run": False}))
+    s.assert_not_called()
+    add.assert_called_once_with(LINK, ["mixes"], "1988 tape")
+    assert out.startswith("Added 1 of 1 items") and "Created new tags: mixes" in out
+
+
+@pytest.mark.parametrize("bad", ["javascript:alert(1)", "file:///etc/passwd", "soundcloud.com/x",
+                                 "https://a.com/x\nhttps://b.com/y", "musicbox://add?url=x"])
+def test_only_single_http_links_are_accepted(opened, bad):
+    add, _ = opened
+    with pytest.raises(ToolError, match="http or https"):
+        call({"albums": [{"url": bad, "tags": ["x"]}], "dry_run": False})
+    add.assert_not_called()
+
+
+def test_shared_tags_merge_with_item_tags_and_reuse_existing_spelling(opened):
+    add, _ = opened
+    with mock.patch.object(m, "_gui_session_available", return_value=True):
+        call({"albums": [{"url": LINK, "tags": ["AMBIENT", "detroit"]}],
+              "tags": ["techno", "Detroit"], "dry_run": False})
+    add.assert_called_once_with(LINK, ["Techno", "Detroit", "Ambient"], "")
+
+
+def test_untagged_items_are_refused_on_a_real_run(opened):
+    add, _ = opened
+    with mock.patch.object(m, "_gui_session_available", return_value=True):
+        with pytest.raises(ToolError, match="at least one tag"):
+            call({"albums": [{"url": LINK}, {"url": LINK, "tags": ["x"]}], "dry_run": False})
+    add.assert_not_called()
+
+
+def test_dry_run_flags_new_and_missing_tags(opened):
+    out = text(call({"albums": [{"url": LINK, "tags": ["techno", "mixes"]}, {"url": LINK}]}))
+    assert f"  - {LINK} tags: Techno, mixes" in out
+    assert "New tags that would be created: mixes" in out
+    assert "1 item(s) have no tags" in out
+
+
+def test_dry_run_says_when_tags_cant_be_read(opened):
+    with mock.patch.object(m, "_existing_tags", return_value=None):
+        out = text(call({"albums": [{"url": LINK, "tags": ["x"]}]}))
+    assert "Couldn't read MusicBox's tags" in out
+
+
+def test_too_many_tags_rejected(opened):
+    with pytest.raises(ToolError, match="at most"):
+        call({"albums": albums(1, tags=[f"t{i}" for i in range(m.MAX_TAGS + 1)])})
+
+
+def test_list_tags():
+    with mock.patch.object(m, "_gui_session_available", return_value=True), \
+         mock.patch.object(m, "_shortcut", return_value="Techno\n\nAmbient\n") as sc:
+        assert text(asyncio.run(m.mcp.call_tool("list_tags", {}))) == "Techno\nAmbient"
+    sc.assert_called_once_with(m.TAGS_SHORTCUT)
+    with mock.patch.object(m, "_gui_session_available", return_value=True), \
+         mock.patch.object(m, "_shortcut", return_value=None):
+        with pytest.raises(ToolError, match="Reading tags failed"):
+            asyncio.run(m.mcp.call_tool("list_tags", {}))
+
+
+@pytest.mark.parametrize("payload", [None, "{}"])
+def test_shortcuts_never_read_the_mcp_connection(payload):
+    """`shortcuts run` reads stdin when given no input file; stdin is the MCP pipe."""
+    with mock.patch("subprocess.run", return_value=mock.Mock(returncode=0)) as run:
+        m._shortcut(m.TAGS_SHORTCUT, payload)
+    assert run.call_args.kwargs["stdin"] is subprocess.DEVNULL

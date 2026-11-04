@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "musicbox-add"
-version = "0.2.0"
+version = "0.3.0"
 description = "Add albums to MusicBox from the command line or over MCP"
 requires-python = ">=3.12"
 dependencies = ["mcp[cli]>=1.30,<2"]
