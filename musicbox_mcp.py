@@ -1,10 +1,13 @@
 """MCP server that saves music to MusicBox, with tags and notes. Runs over stdio.
 
-Two tools:
+Four tools:
 - add_albums: saves albums, songs or mixes. Each item is either a link from any
   service (Apple Music, Spotify, Bandcamp, SoundCloud, YouTube, Discogs...) or an
   artist and album pair, which is looked up on Apple Music first.
 - list_tags: the names of the tags already in MusicBox, so new adds reuse them.
+- list_items: the items carrying one tag, each with its MusicBox id.
+- delete_items: deletes the items carrying a tag (or just some of them, by id).
+  Dry run by default.
 
 MusicBox's own "Add Music" Shortcuts action saves with no dialog and takes a URL,
 tags and notes, so a real run calls a small Shortcut once per item:
@@ -13,7 +16,13 @@ The JSON is {"url": ..., "tags": [...], "notes": ...}. The Shortcut finds each t
 by name (creating it if it doesn't exist), passes everything to Add Music and
 outputs the added music's title as plain text. MUSICBOX_SHORTCUT names it (default
 "Duet: Add Tagged Music to MusicBox"). MUSICBOX_TAGS_SHORTCUT names the one that
-lists tag names, one per line (default "Duet: List MusicBox Tags")."""
+lists tag names, one per line (default "Duet: List MusicBox Tags").
+
+Listing and deleting use two more Shortcuts. MUSICBOX_LIST_SHORTCUT (default
+"Duet: List MusicBox Items") takes {"tag": ...} and outputs one line per item,
+"id<TAB>artist<TAB>title", or the text "no such tag". MUSICBOX_DELETE_SHORTCUT
+(default "Duet: Delete MusicBox Items") takes {"ids": [...]}, finds each item by
+id and runs MusicBox's Delete Music action; it outputs "deleted"."""
 
 import json
 import os
@@ -37,6 +46,11 @@ MAX_URL_LENGTH = 2000
 RUN_TIMEOUT_S = 30
 SHORTCUT = os.environ.get("MUSICBOX_SHORTCUT", "Duet: Add Tagged Music to MusicBox")
 TAGS_SHORTCUT = os.environ.get("MUSICBOX_TAGS_SHORTCUT", "Duet: List MusicBox Tags")
+LIST_SHORTCUT = os.environ.get("MUSICBOX_LIST_SHORTCUT", "Duet: List MusicBox Items")
+DELETE_SHORTCUT = os.environ.get("MUSICBOX_DELETE_SHORTCUT", "Duet: Delete MusicBox Items")
+MAX_DELETE = 50
+MAX_ID_LENGTH = 200
+NO_SUCH_TAG = "no such tag"
 SHORTCUTS_CLI = "/usr/bin/shortcuts"
 
 mcp = FastMCP("musicbox")
@@ -178,6 +192,116 @@ def list_tags() -> str:
     if tags is None:
         raise ToolError(f"Reading tags failed. Check that the '{TAGS_SHORTCUT}' shortcut exists on the Mac.")
     return "\n".join(tags) if tags else "MusicBox has no tags yet."
+
+
+def _items_with_tag(tag):
+    """Items carrying a tag as [{"id", "artist", "title"}], None when the list can't be read,
+    or the string NO_SUCH_TAG when MusicBox has no tag by that name."""
+    out = _shortcut(LIST_SHORTCUT, json.dumps({"tag": tag}))
+    if out is None:
+        return None
+    if out.strip().casefold() == NO_SUCH_TAG:
+        return NO_SUCH_TAG
+    items = []
+    for line in out.splitlines():
+        if not line.strip():
+            continue
+        parts = line.split("\t")
+        if len(parts) < 3 or not parts[0].strip():
+            return None
+        items.append({"id": parts[0].strip(), "artist": parts[1].strip(),
+                      "title": "\t".join(parts[2:]).strip()})
+    return items
+
+
+def _read_items(tag):
+    """Check the tag name and desktop session, then list the tag's items or raise a plain error."""
+    tag = " ".join(tag.split())
+    if not tag:
+        raise ToolError("A tag name is required.")
+    if len(tag) > MAX_TAG_LENGTH:
+        raise ToolError(f"Tag names must be {MAX_TAG_LENGTH} characters or fewer.")
+    if not _gui_session_available():
+        raise ToolError("MusicBox can't be reached: nobody is logged in to the Mac's desktop.")
+    items = _items_with_tag(tag)
+    if items is None:
+        raise ToolError(f"Reading items failed. Check that the '{LIST_SHORTCUT}' shortcut exists on the Mac.")
+    if items == NO_SUCH_TAG:
+        raise ToolError(f"MusicBox has no tag named '{tag}'. Check list_tags for the exact name.")
+    return tag, items
+
+
+def _item_lines(items):
+    return "\n".join(f"  - {i['artist']} - {i['title']} (id {i['id']})" for i in items)
+
+
+@mcp.tool()
+def list_items(tag: str) -> str:
+    """List the items in MusicBox that carry a tag, oldest added first.
+
+    Each line shows artist, title and the item's MusicBox id. Use those ids with
+    delete_items. Check list_tags for the exact tag name. Requires a logged-in desktop session on the Mac.
+    """
+    tag, items = _read_items(tag)
+    if not items:
+        return f"No items carry the tag '{tag}'."
+    return f"{len(items)} item(s) tagged '{tag}':\n" + _item_lines(items)
+
+
+@mcp.tool()
+def delete_items(tag: str, ids: list[str] = [], dry_run: StrictBool = True) -> str:
+    """Delete the items that carry a tag from MusicBox, or only some of them.
+
+    Give the tag, and optionally ids (from list_items) to delete just those items;
+    with no ids every item carrying the tag is deleted. Only items that carry the
+    tag can be deleted, and the tag itself is left in place. At most 50 items per
+    call.
+
+    dry_run defaults to true: it only reports which items would be deleted. Pass a
+    real boolean false to delete them; there is no undo, and the result lists what
+    is still tagged afterwards. Requires a logged-in desktop session on the Mac.
+    """
+    tag, items = _read_items(tag)
+    wanted = []
+    for raw in ids:
+        item_id = raw.strip()
+        if (not item_id or len(item_id) > MAX_ID_LENGTH
+                or any(c in item_id for c in "\t\r\n")):
+            raise ToolError("Every id must be a non-empty single-line value from list_items.")
+        if item_id not in wanted:
+            wanted.append(item_id)
+    by_id = {i["id"]: i for i in items}
+    unknown = [w for w in wanted if w not in by_id]
+    if unknown:
+        raise ToolError(f"These ids don't carry the tag '{tag}', so nothing was deleted: "
+                        + ", ".join(unknown))
+    targets = [by_id[w] for w in wanted] if wanted else items
+    if not targets:
+        return f"Nothing to delete: no items carry the tag '{tag}'."
+    if len(targets) > MAX_DELETE:
+        raise ToolError(f"That would delete {len(targets)} items; the limit is {MAX_DELETE} per call. "
+                        "Nothing was deleted. Pass ids to delete in batches.")
+    if dry_run:
+        return (f"Dry run, nothing deleted. Would delete {len(targets)} of {len(items)} "
+                f"item(s) tagged '{tag}':\n" + _item_lines(targets))
+
+    out = _shortcut(DELETE_SHORTCUT, json.dumps({"ids": [t["id"] for t in targets]}))
+    if out is None:
+        raise ToolError(f"Deleting failed. Check that the '{DELETE_SHORTCUT}' shortcut exists on the Mac. "
+                        "Run list_items to see what is left.")
+    after = _items_with_tag(tag)
+    if not isinstance(after, list):
+        return (f"Asked MusicBox to delete {len(targets)} item(s), but couldn't re-read the tag to "
+                "confirm. Run list_items to check.\n" + _item_lines(targets))
+    left = {i["id"] for i in after}
+    gone = [t for t in targets if t["id"] not in left]
+    stuck = [t for t in targets if t["id"] in left]
+    head = f"Deleted {len(gone)} of {len(targets)} item(s) tagged '{tag}'."
+    if gone:
+        head += "\n" + _item_lines(gone)
+    if stuck:
+        head += f"\nStill in MusicBox ({len(stuck)}):\n" + _item_lines(stuck)
+    return head + f"\n{len(after)} item(s) still carry '{tag}'."
 
 
 @mcp.tool()

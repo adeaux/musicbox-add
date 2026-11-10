@@ -216,3 +216,129 @@ def test_shortcuts_never_read_the_mcp_connection(payload):
     with mock.patch("subprocess.run", return_value=mock.Mock(returncode=0)) as run:
         m._shortcut(m.TAGS_SHORTCUT, payload)
     assert run.call_args.kwargs["stdin"] is subprocess.DEVNULL
+
+
+def call_tool(name, args):
+    return text(asyncio.run(m.mcp.call_tool(name, args)))
+
+
+ITEMS = [{"id": "ID1", "artist": "Artist One", "title": "Title One"},
+         {"id": "ID2", "artist": "Artist Two", "title": "Title Two"}]
+
+
+@pytest.fixture
+def tagged():
+    with mock.patch.object(m, "_gui_session_available", return_value=True), \
+         mock.patch.object(m, "_items_with_tag", return_value=list(ITEMS)) as items, \
+         mock.patch.object(m, "_shortcut", return_value="deleted") as sc:
+        yield items, sc
+
+
+def test_list_items_shows_ids(tagged):
+    out = call_tool("list_items", {"tag": "Oh My Rockness"})
+    assert "2 item(s) tagged 'Oh My Rockness'" in out and "Artist One - Title One (id ID1)" in out
+
+
+def test_list_items_parses_the_shortcut_output():
+    with mock.patch.object(m, "_shortcut", return_value="ID1\tA\tT\n\nID2\tB\tC\tD\n"):
+        assert m._items_with_tag("x") == [{"id": "ID1", "artist": "A", "title": "T"},
+                                          {"id": "ID2", "artist": "B", "title": "C\tD"}]
+    with mock.patch.object(m, "_shortcut", return_value="No such tag"):
+        assert m._items_with_tag("x") == m.NO_SUCH_TAG
+    with mock.patch.object(m, "_shortcut", return_value=""):
+        assert m._items_with_tag("x") == []
+    with mock.patch.object(m, "_shortcut", return_value="garbage line"):
+        assert m._items_with_tag("x") is None
+    with mock.patch.object(m, "_shortcut", return_value=None):
+        assert m._items_with_tag("x") is None
+
+
+def test_list_items_errors_are_plain():
+    with mock.patch.object(m, "_gui_session_available", return_value=False):
+        with pytest.raises(ToolError, match="nobody is logged in"):
+            call_tool("list_items", {"tag": "x"})
+    with mock.patch.object(m, "_gui_session_available", return_value=True):
+        with mock.patch.object(m, "_items_with_tag", return_value=m.NO_SUCH_TAG):
+            with pytest.raises(ToolError, match="no tag named 'x'"):
+                call_tool("list_items", {"tag": "x"})
+        with mock.patch.object(m, "_items_with_tag", return_value=None):
+            with pytest.raises(ToolError, match="shortcut exists"):
+                call_tool("list_items", {"tag": "x"})
+        with pytest.raises(ToolError, match="tag name is required"):
+            call_tool("list_items", {"tag": "  "})
+
+
+def test_delete_dry_run_is_the_default_and_deletes_nothing(tagged):
+    _, sc = tagged
+    out = call_tool("delete_items", {"tag": "t"})
+    assert out.startswith("Dry run, nothing deleted. Would delete 2 of 2")
+    sc.assert_not_called()
+
+
+@pytest.mark.parametrize("bad", ["false", "False", 0, None, "no"])
+def test_delete_needs_a_real_boolean_false(tagged, bad):
+    _, sc = tagged
+    with pytest.raises(Exception):
+        call_tool("delete_items", {"tag": "t", "dry_run": bad})
+    sc.assert_not_called()
+
+
+def test_delete_real_run_deletes_the_requested_ids_and_checks(tagged):
+    items, sc = tagged
+    items.side_effect = [list(ITEMS), [ITEMS[1]]]
+    out = call_tool("delete_items", {"tag": "t", "ids": ["ID1"], "dry_run": False})
+    name, payload = sc.call_args.args
+    assert name == m.DELETE_SHORTCUT and json.loads(payload) == {"ids": ["ID1"]}
+    assert out.startswith("Deleted 1 of 1 item(s) tagged 't'.") and "1 item(s) still carry 't'" in out
+
+
+def test_delete_without_ids_targets_the_whole_tag(tagged):
+    items, sc = tagged
+    items.side_effect = [list(ITEMS), []]
+    out = call_tool("delete_items", {"tag": "t", "dry_run": False})
+    assert json.loads(sc.call_args.args[1]) == {"ids": ["ID1", "ID2"]}
+    assert "Deleted 2 of 2" in out
+
+
+def test_delete_reports_items_that_survive(tagged):
+    items, _ = tagged
+    items.side_effect = [list(ITEMS), list(ITEMS)]
+    out = call_tool("delete_items", {"tag": "t", "ids": ["ID1"], "dry_run": False})
+    assert out.startswith("Deleted 0 of 1") and "Still in MusicBox (1)" in out
+
+
+def test_delete_refuses_ids_outside_the_tag(tagged):
+    _, sc = tagged
+    with pytest.raises(ToolError, match="NOPE"):
+        call_tool("delete_items", {"tag": "t", "ids": ["ID1", "NOPE"], "dry_run": False})
+    sc.assert_not_called()
+
+
+@pytest.mark.parametrize("bad", ["", "  ", "a\tb", "a\nb", "x" * 201])
+def test_delete_refuses_bad_ids(tagged, bad):
+    _, sc = tagged
+    with pytest.raises(ToolError, match="Every id"):
+        call_tool("delete_items", {"tag": "t", "ids": [bad], "dry_run": False})
+    sc.assert_not_called()
+
+
+def test_delete_refuses_more_than_the_limit(tagged):
+    items, sc = tagged
+    items.return_value = [{"id": f"I{n}", "artist": "a", "title": "t"} for n in range(m.MAX_DELETE + 1)]
+    with pytest.raises(ToolError, match="limit is 50"):
+        call_tool("delete_items", {"tag": "t", "dry_run": False})
+    sc.assert_not_called()
+
+
+def test_delete_failure_is_plain(tagged):
+    items, sc = tagged
+    sc.return_value = None
+    with pytest.raises(ToolError, match="Deleting failed"):
+        call_tool("delete_items", {"tag": "t", "dry_run": False})
+
+
+def test_delete_with_no_items_does_nothing(tagged):
+    items, sc = tagged
+    items.return_value = []
+    assert call_tool("delete_items", {"tag": "t", "dry_run": False}).startswith("Nothing to delete")
+    sc.assert_not_called()
