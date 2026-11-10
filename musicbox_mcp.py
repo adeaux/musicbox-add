@@ -1,6 +1,6 @@
 """MCP server that saves music to MusicBox, with tags and notes. Runs over stdio.
 
-Four tools:
+Five tools:
 - add_albums: saves albums, songs or mixes. Each item is either a link from any
   service (Apple Music, Spotify, Bandcamp, SoundCloud, YouTube, Discogs...) or an
   artist and album pair, which is looked up on Apple Music first.
@@ -8,6 +8,7 @@ Four tools:
 - list_items: the items carrying one tag, each with its MusicBox id.
 - delete_items: deletes the items carrying a tag (or just some of them, by id).
   Dry run by default.
+- delete_tag: deletes one tag by its exact name. Dry run by default.
 
 MusicBox's own "Add Music" Shortcuts action saves with no dialog and takes a URL,
 tags and notes, so a real run calls a small Shortcut once per item:
@@ -22,7 +23,10 @@ Listing and deleting use two more Shortcuts. MUSICBOX_LIST_SHORTCUT (default
 "Duet: List MusicBox Items") takes {"tag": ...} and outputs one line per item,
 "id<TAB>artist<TAB>title", or the text "no such tag". MUSICBOX_DELETE_SHORTCUT
 (default "Duet: Delete MusicBox Items") takes {"ids": [...]}, finds each item by
-id and runs MusicBox's Delete Music action; it outputs "deleted"."""
+id and runs MusicBox's Delete Music action; it outputs "deleted".
+MUSICBOX_DELETE_TAG_SHORTCUT (default "Duet: Delete MusicBox Tag") takes {"tag": ...},
+finds the tag by exact name and runs MusicBox's Delete Tags action; it outputs
+"deleted", or "no such tag" when nothing matched."""
 
 import json
 import os
@@ -48,6 +52,7 @@ SHORTCUT = os.environ.get("MUSICBOX_SHORTCUT", "Duet: Add Tagged Music to MusicB
 TAGS_SHORTCUT = os.environ.get("MUSICBOX_TAGS_SHORTCUT", "Duet: List MusicBox Tags")
 LIST_SHORTCUT = os.environ.get("MUSICBOX_LIST_SHORTCUT", "Duet: List MusicBox Items")
 DELETE_SHORTCUT = os.environ.get("MUSICBOX_DELETE_SHORTCUT", "Duet: Delete MusicBox Items")
+DELETE_TAG_SHORTCUT = os.environ.get("MUSICBOX_DELETE_TAG_SHORTCUT", "Duet: Delete MusicBox Tag")
 MAX_DELETE = 50
 MAX_ID_LENGTH = 200
 NO_SUCH_TAG = "no such tag"
@@ -302,6 +307,48 @@ def delete_items(tag: str, ids: list[str] = [], dry_run: StrictBool = True) -> s
     if stuck:
         head += f"\nStill in MusicBox ({len(stuck)}):\n" + _item_lines(stuck)
     return head + f"\n{len(after)} item(s) still carry '{tag}'."
+
+
+@mcp.tool()
+def delete_tag(tag: str, dry_run: StrictBool = True) -> str:
+    """Delete one tag from MusicBox, by its exact name.
+
+    The name must match one from list_tags exactly, including capitals; there is
+    no fuzzy matching, and only one tag can be deleted per call. dry_run defaults
+    to true: it reports the exact tag and how many items carry it. Pass a real
+    boolean false to delete; only the label goes, the items that carried it stay
+    in MusicBox. There is no undo, and the tag list is re-read afterwards to
+    confirm it is gone. Requires a logged-in desktop session on the
+    Mac.
+    """
+    if not tag.strip():
+        raise ToolError("A tag name is required.")
+    if len(tag) > MAX_TAG_LENGTH:
+        raise ToolError(f"Tag names must be {MAX_TAG_LENGTH} characters or fewer.")
+    if not _gui_session_available():
+        raise ToolError("MusicBox can't be reached: nobody is logged in to the Mac's desktop.")
+    existing = _existing_tags()
+    if existing is None:
+        raise ToolError(f"Reading tags failed. Check that the '{TAGS_SHORTCUT}' shortcut exists on the Mac.")
+    if tag not in existing:
+        near = [t for t in existing if t.casefold() == tag.casefold()]
+        hint = f" Did you mean '{near[0]}'?" if near else " Check list_tags for the exact name."
+        raise ToolError(f"MusicBox has no tag named '{tag}'. Nothing was deleted.{hint}")
+    items = _items_with_tag(tag)
+    count = f"{len(items)} item(s) carry it" if isinstance(items, list) else "couldn't count the items that carry it"
+    if dry_run:
+        return f"Dry run, nothing deleted. Would delete the tag '{tag}'; {count}."
+
+    out = _shortcut(DELETE_TAG_SHORTCUT, json.dumps({"tag": tag}))
+    if out is None:
+        raise ToolError(f"Deleting the tag failed. Check that the '{DELETE_TAG_SHORTCUT}' shortcut exists "
+                        "on the Mac. Run list_tags to see what is left.")
+    after = _existing_tags()
+    if after is None:
+        return f"Asked MusicBox to delete the tag '{tag}', but couldn't re-read the tag list. Run list_tags to check."
+    if tag in after:
+        return f"The tag '{tag}' is still in MusicBox ({count}). Nothing was confirmed deleted."
+    return f"Deleted the tag '{tag}' ({count} before). It is no longer in MusicBox's tag list."
 
 
 @mcp.tool()
