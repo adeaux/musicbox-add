@@ -91,7 +91,8 @@ Deletes items from MusicBox. Give the `tag`; with no `ids` every item carrying i
 Deletes one tag, by its exact name. The name must match one from `list_tags` letter for letter (a different capitalisation is refused, with a hint), and only one tag goes per call.
 
 - `dry_run` defaults to true and reports the exact tag and how many items carry it. Only a real boolean `false` deletes.
-- After a real delete the tool re-reads the tag list and says whether the tag is gone.
+- Only the label goes: items that carried the tag stay in MusicBox, now without it (checked live Nov 10 2026 with a throwaway item that carried two tags; after one was deleted the item was still listed under the other).
+- After a real delete the tool re-reads the tag list and says whether the tag is gone. The live run took 4.7 s and showed no dialog.
 - There is no undo. Needs a logged-in desktop session on the Mac.
 
 ### The five Shortcuts

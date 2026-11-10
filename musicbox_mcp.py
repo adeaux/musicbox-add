@@ -316,8 +316,9 @@ def delete_tag(tag: str, dry_run: StrictBool = True) -> str:
     The name must match one from list_tags exactly, including capitals; there is
     no fuzzy matching, and only one tag can be deleted per call. dry_run defaults
     to true: it reports the exact tag and how many items carry it. Pass a real
-    boolean false to delete; there is no undo, and the tag list is re-read
-    afterwards to confirm it is gone. Requires a logged-in desktop session on the
+    boolean false to delete; only the label goes, the items that carried it stay
+    in MusicBox. There is no undo, and the tag list is re-read afterwards to
+    confirm it is gone. Requires a logged-in desktop session on the
     Mac.
     """
     if not tag.strip():
