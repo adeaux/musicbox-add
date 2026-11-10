@@ -54,7 +54,7 @@ The key file keeps `ANTHROPIC_API_KEY` out of your shell profile, so tools that 
 
 ## MCP server
 
-`musicbox-mcp` is a stdio [MCP](https://modelcontextprotocol.io) server with four tools. It does not read Safari or call Anthropic, so it needs no API key.
+`musicbox-mcp` is a stdio [MCP](https://modelcontextprotocol.io) server with five tools. It does not read Safari or call Anthropic, so it needs no API key.
 
 ### `add_albums(albums, tags=[], dry_run=true)`
 
@@ -83,10 +83,18 @@ Deletes items from MusicBox. Give the `tag`; with no `ids` every item carrying i
 
 - `dry_run` defaults to true and lists exactly what would go. Only a real boolean `false` deletes (the string `"false"` is refused).
 - After a real delete the tool lists the tag again and reports what is gone and anything that survived.
-- There is no undo. There is deliberately no tag-deleting tool.
+- There is no undo. Deleting a tag has its own tool, `delete_tag`.
 - Needs a logged-in desktop session on the Mac.
 
-### The four Shortcuts
+### `delete_tag(tag, dry_run=true)`
+
+Deletes one tag, by its exact name. The name must match one from `list_tags` letter for letter (a different capitalisation is refused, with a hint), and only one tag goes per call.
+
+- `dry_run` defaults to true and reports the exact tag and how many items carry it. Only a real boolean `false` deletes.
+- After a real delete the tool re-reads the tag list and says whether the tag is gone.
+- There is no undo. Needs a logged-in desktop session on the Mac.
+
+### The five Shortcuts
 
 Saving goes through MusicBox's own Shortcuts actions, which work without the Import dialog that the `musicbox://add` URL scheme opens. The server runs each Shortcut with `shortcuts run`, about 6 seconds per item. It closes the command's stdin: given no input file, `shortcuts run` waits on stdin, which inside the server is the MCP connection. To try the tag list by hand, run `shortcuts run "Duet: List MusicBox Tags" < /dev/null`.
 
@@ -105,7 +113,9 @@ Saving goes through MusicBox's own Shortcuts actions, which work without the Imp
 
 **Duet: List MusicBox Items** (or set `MUSICBOX_LIST_SHORTCUT`). Input is a text file holding `{"tag": "..."}`. MusicBox **Find Tag** where Name is the tag (limit 1); if there is none, **Stop and Output** the text `no such tag`. Otherwise **Find Music** where Tags contain it, sorted by Date Added, and output one line per item, `id<TAB>artist<TAB>title`.
 
-**Duet: Delete MusicBox Items** (or set `MUSICBOX_DELETE_SHORTCUT`). Input is `{"ids": ["..."]}`. For each id, **Find Music** where Identifier is the id (limit 1) and **Add to Variable**; then MusicBox **Delete Music** on the variable (with Show When Run off) and **Stop and Output** `deleted`. Sources are in the gateway clone's `local/shortcuts/`.
+**Duet: Delete MusicBox Items** (or set `MUSICBOX_DELETE_SHORTCUT`). Input is `{"ids": ["..."]}`. For each id, **Find Music** where Identifier is the id (limit 1) and **Add to Variable**; then MusicBox **Delete Music** on the variable (with Show When Run off) and **Stop and Output** `deleted`. 
+
+**Duet: Delete MusicBox Tag** (or set `MUSICBOX_DELETE_TAG_SHORTCUT`). Input is `{"tag": "..."}`. **Find Tag** where Name is the tag (limit 1), read its Name, and only continue if the Name is exactly the requested tag (a second check with Replace Text set to case sensitive, because the Find filter may ignore case). Then MusicBox **Delete Tags** on it (Show When Run off) and **Stop and Output** `deleted`; otherwise output `no such tag`. Sources are in the gateway clone's `local/shortcuts/`.
 
 Until the first two exist, `add_albums` reports that the shortcut is missing and saves nothing, and dry runs say tags couldn't be checked.
 

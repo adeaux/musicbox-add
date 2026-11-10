@@ -342,3 +342,79 @@ def test_delete_with_no_items_does_nothing(tagged):
     items.return_value = []
     assert call_tool("delete_items", {"tag": "t", "dry_run": False}).startswith("Nothing to delete")
     sc.assert_not_called()
+
+
+@pytest.fixture
+def tags():
+    with mock.patch.object(m, "_gui_session_available", return_value=True), \
+         mock.patch.object(m, "_existing_tags", return_value=["Techno", "duet test tag"]) as ex, \
+         mock.patch.object(m, "_items_with_tag", return_value=list(ITEMS)), \
+         mock.patch.object(m, "_shortcut", return_value="deleted") as sc:
+        yield ex, sc
+
+
+def test_delete_tag_dry_run_is_the_default(tags):
+    _, sc = tags
+    out = call_tool("delete_tag", {"tag": "Techno"})
+    assert out == "Dry run, nothing deleted. Would delete the tag 'Techno'; 2 item(s) carry it."
+    sc.assert_not_called()
+
+
+@pytest.mark.parametrize("bad", ["false", "False", 0, None, "no"])
+def test_delete_tag_needs_a_real_boolean_false(tags, bad):
+    _, sc = tags
+    with pytest.raises(Exception):
+        call_tool("delete_tag", {"tag": "Techno", "dry_run": bad})
+    sc.assert_not_called()
+
+
+def test_delete_tag_real_run_deletes_and_rereads(tags):
+    ex, sc = tags
+    ex.side_effect = [["Techno", "duet test tag"], ["duet test tag"]]
+    out = call_tool("delete_tag", {"tag": "Techno", "dry_run": False})
+    name, payload = sc.call_args.args
+    assert name == m.DELETE_TAG_SHORTCUT and json.loads(payload) == {"tag": "Techno"}
+    assert out.startswith("Deleted the tag 'Techno'")
+
+
+def test_delete_tag_needs_the_exact_name(tags):
+    _, sc = tags
+    with pytest.raises(ToolError, match="Did you mean 'Techno'"):
+        call_tool("delete_tag", {"tag": "techno", "dry_run": False})
+    with pytest.raises(ToolError, match="no tag named 'Tech'"):
+        call_tool("delete_tag", {"tag": "Tech", "dry_run": False})
+    sc.assert_not_called()
+
+
+@pytest.mark.parametrize("bad", ["", "   ", "x" * 61])
+def test_delete_tag_refuses_bad_names(tags, bad):
+    _, sc = tags
+    with pytest.raises(ToolError):
+        call_tool("delete_tag", {"tag": bad, "dry_run": False})
+    sc.assert_not_called()
+
+
+def test_delete_tag_reports_a_tag_that_survives(tags):
+    ex, _ = tags
+    ex.side_effect = [["Techno"], ["Techno"]]
+    out = call_tool("delete_tag", {"tag": "Techno", "dry_run": False})
+    assert "still in MusicBox" in out
+
+
+def test_delete_tag_failures_are_plain(tags):
+    ex, sc = tags
+    sc.return_value = None
+    with pytest.raises(ToolError, match="Deleting the tag failed"):
+        call_tool("delete_tag", {"tag": "Techno", "dry_run": False})
+    ex.side_effect = None
+    ex.return_value = None
+    with pytest.raises(ToolError, match="Reading tags failed"):
+        call_tool("delete_tag", {"tag": "Techno"})
+    with mock.patch.object(m, "_gui_session_available", return_value=False):
+        with pytest.raises(ToolError, match="nobody is logged in"):
+            call_tool("delete_tag", {"tag": "Techno"})
+
+
+def test_delete_tag_dry_run_copes_with_an_uncountable_tag(tags):
+    with mock.patch.object(m, "_items_with_tag", return_value=None):
+        assert "couldn't count" in call_tool("delete_tag", {"tag": "Techno"})
