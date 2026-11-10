@@ -98,3 +98,6 @@ The MCP server first took only artist and album, searched Apple Music, and saved
 - AppIntents: `AddMusicAppIntent` (url, tags, notes; tags can also be set to Ask Each Time), `AddMusicManuallyAppIntent`, `GetMusic`, `CreateTag`, `MarkAsPlayed`, `DeleteMusic`, `AddTagAppIntent`
 - `openAppWhenRun: false` on most intents — designed for background execution
 - App data stored in CloudKit (no local SQLite to write to)
+
+### List and delete (Nov 10 2026)
+MusicBox's own `Find Music` and `Delete Music` Shortcuts actions do the work, so no URL scheme or AppleScript is needed (MusicBox has no scripting dictionary). `list_items` and `delete_items` run two more Shortcuts. Music items expose `tags` as tag-name text, filtered with "contains"; the list Shortcut returned `id<TAB>artist<TAB>title` per line in about 4 s.
