@@ -97,7 +97,7 @@ Deletes one tag, by its exact name. The name must match one from `list_tags` let
 
 ### The five Shortcuts
 
-Saving goes through MusicBox's own Shortcuts actions, which work without the Import dialog that the `musicbox://add` URL scheme opens. The server runs each Shortcut with `shortcuts run`, about 6 seconds per item. It closes the command's stdin: given no input file, `shortcuts run` waits on stdin, which inside the server is the MCP connection. To try the tag list by hand, run `shortcuts run "Duet: List MusicBox Tags" < /dev/null`.
+Saving goes through MusicBox's own Shortcuts actions, which work without the Import dialog that the `musicbox://add` URL scheme opens. The server runs each Shortcut with `shortcuts run`, about 6 seconds per item, in a worker thread, so it keeps answering while a run is going (the gateway pings each tool server and restarts one that stops answering). It closes the command's stdin: given no input file, `shortcuts run` waits on stdin, which inside the server is the MCP connection. To try the tag list by hand, run `shortcuts run "Duet: List MusicBox Tags" < /dev/null`.
 
 **Duet: Add Tagged Music to MusicBox** (or set `MUSICBOX_SHORTCUT`). The server passes it a text file holding `{"url": "...", "tags": ["..."], "notes": "..."}`.
 

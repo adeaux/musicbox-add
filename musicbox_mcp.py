@@ -28,6 +28,7 @@ MUSICBOX_DELETE_TAG_SHORTCUT (default "Duet: Delete MusicBox Tag") takes {"tag":
 finds the tag by exact name and runs MusicBox's Delete Tags action; it outputs
 "deleted", or "no such tag" when nothing matched."""
 
+import functools
 import json
 import os
 import subprocess
@@ -35,6 +36,7 @@ import tempfile
 from pathlib import Path
 from urllib.parse import urlsplit
 
+import anyio.to_thread
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import BaseModel, StrictBool
@@ -68,6 +70,22 @@ class Album(BaseModel):
     url: str = ""
     tags: list[str] = []
     notes: str = ""
+
+
+def _off_loop(fn):
+    """Run a blocking tool in a worker thread, so the server keeps answering meanwhile.
+
+    FastMCP runs a plain function tool on its event loop, and these tools wait seconds
+    on Shortcuts runs. While the loop is blocked the server can't even answer the
+    gateway's liveness pings, so the gateway would take it for hung and restart it.
+    The wrapper keeps the tool's name, docstring and signature for FastMCP.
+    """
+
+    @functools.wraps(fn)
+    async def wrapper(*args, **kwargs):
+        return await anyio.to_thread.run_sync(functools.partial(fn, *args, **kwargs))
+
+    return wrapper
 
 
 def _gui_session_available():
@@ -185,6 +203,7 @@ def _match_existing(items, existing):
 
 
 @mcp.tool()
+@_off_loop
 def list_tags() -> str:
     """List the tag names already in MusicBox, one per line.
 
@@ -241,6 +260,7 @@ def _item_lines(items):
 
 
 @mcp.tool()
+@_off_loop
 def list_items(tag: str) -> str:
     """List the items in MusicBox that carry a tag, oldest added first.
 
@@ -254,6 +274,7 @@ def list_items(tag: str) -> str:
 
 
 @mcp.tool()
+@_off_loop
 def delete_items(tag: str, ids: list[str] = [], dry_run: StrictBool = True) -> str:
     """Delete the items that carry a tag from MusicBox, or only some of them.
 
@@ -310,6 +331,7 @@ def delete_items(tag: str, ids: list[str] = [], dry_run: StrictBool = True) -> s
 
 
 @mcp.tool()
+@_off_loop
 def delete_tag(tag: str, dry_run: StrictBool = True) -> str:
     """Delete one tag from MusicBox, by its exact name.
 
@@ -352,6 +374,7 @@ def delete_tag(tag: str, dry_run: StrictBool = True) -> str:
 
 
 @mcp.tool()
+@_off_loop
 def add_albums(albums: list[Album], tags: list[str] = [], dry_run: StrictBool = True) -> str:
     """Save albums, songs or mixes to MusicBox, tagged.
 

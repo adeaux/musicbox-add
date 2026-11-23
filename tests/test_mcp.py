@@ -418,3 +418,24 @@ def test_delete_tag_failures_are_plain(tags):
 def test_delete_tag_dry_run_copes_with_an_uncountable_tag(tags):
     with mock.patch.object(m, "_items_with_tag", return_value=None):
         assert "couldn't count" in call_tool("delete_tag", {"tag": "Techno"})
+
+
+def test_tools_run_off_the_event_loop():
+    """Shortcut runs block for seconds; they must not stop the server answering meanwhile
+    (the gateway pings each child and restarts one that doesn't answer)."""
+    import time
+
+    def slow_shortcut(*args, **kwargs):
+        time.sleep(0.5)
+        return "Techno\n"
+
+    async def both():
+        return await asyncio.gather(m.mcp.call_tool("list_tags", {}), m.mcp.call_tool("list_tags", {}))
+
+    with mock.patch.object(m, "_gui_session_available", return_value=True), \
+         mock.patch.object(m, "_shortcut", side_effect=slow_shortcut):
+        started = time.monotonic()
+        results = asyncio.run(both())
+        elapsed = time.monotonic() - started
+    assert [text(r) for r in results] == ["Techno", "Techno"]
+    assert elapsed < 0.9, f"the two calls ran one after the other ({elapsed:.2f}s)"
